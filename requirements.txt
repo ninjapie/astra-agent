@@ -1,0 +1,15 @@
+langgraph
+langchain
+langchain_openai
+tavily-python
+python-dotenv
+langchain_community
+langchain_tavily
+fastapi
+uvicorn[standard]
+llama-index
+llama-index-vector-stores-postgres
+llama-index-embeddings-openai
+sqlalchemy
+psycopg2-binary
+fastapi-cors
