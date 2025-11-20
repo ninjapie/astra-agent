@@ -69,6 +69,7 @@ class AgentState(TypedDict):
     # 它跟踪我们现在在计划的哪一步
     current_step: str
     analysis_results: List[str]
+    retry_count: int # 新增: 记录重试次数
 
 
 # --- 步骤 3: M2 - 定义我们的 "专家 Agent" 节点 ---
@@ -162,6 +163,8 @@ def researcher_node(state: AgentState) -> AgentState:
 
 # 4. 分析师 (Analyst) 节点 (M6 新增)
 async def analyst_node(state: AgentState) -> dict:
+    previous_results = state.get("analysis_results", [])
+    retry_count = state.get("retry_count", 0)
     print("--- 正在调用 [分析师 (M6)] ---")
     task = state.get("task")
     query_engine = index.as_query_engine(similarity_top_k=3)
@@ -186,6 +189,18 @@ async def analyst_node(state: AgentState) -> dict:
        - 务必保存图片到 `/app/output.png`。
     5. 务必使用 print() 输出最终的关键数据。
     """
+
+    # 如果是重试，追加错误信息给 LLM
+    if retry_count > 0 and previous_results:
+        last_error = previous_results[-1]
+        prompt += f"""
+        
+        【重要：修复之前的错误】
+        你上次生成的代码执行失败了。
+        报错信息: {last_error}
+        
+        请分析错误原因，并重新编写正确的代码来解决这个问题。
+        """
     
     # 我们绑定工具! 
     # 这是一个高级技巧: Bind Tools
@@ -215,9 +230,11 @@ async def analyst_node(state: AgentState) -> dict:
     else:
         # 如果 LLM 直接说话了 (没调工具)，我们就用它的话
         analysis_output = response.content
-
+    # 获取当前的重试次数
+    current_retry = state.get("retry_count", 0)
     return {
         "analysis_results": [analysis_output], # 存入状态
+        "retry_count": current_retry + 1, # <--- [关键] 必须在这里 +1
         "current_step": "Write" # 分析完通常去写作 (或由 Supervisor 决定)
     }
 
@@ -282,6 +299,50 @@ def supervisor_router(state: AgentState) -> str:
     elif current_step == "END":
         return "END"
 
+def qc_router(state: AgentState) -> str:
+    """
+    M10 修复版: 质量控制路由
+    检查分析师的结果。如果报错(exit_code != 0), 则打回重造。
+    """
+    results = state.get("analysis_results", [])
+    if not results:
+        return "Writer"
+    
+    last_result = results[-1]
+    
+    # 默认假设没有错误
+    is_error = False
+    
+    # 1. 尝试解析 JSON (适配 M7 Tools)
+    try:
+        import json
+        result_data = json.loads(last_result)
+        
+        # 检查 exit_code (Docker 运行失败) 或 error (Docker 启动失败)
+        exit_code = result_data.get("exit_code", 0)
+        error_msg = result_data.get("error")
+        
+        if exit_code != 0 or error_msg:
+            is_error = True
+            
+    except json.JSONDecodeError:
+        # 2. 兼容旧逻辑 (如果返回的不是 JSON)
+        if "执行错误" in last_result or "Error" in last_result or "Traceback" in last_result:
+            is_error = True
+
+    # 3. 路由逻辑
+    if is_error:
+        retry_count = state.get("retry_count", 0)
+        # 最多重试 3 次
+        if retry_count < 3:
+            print(f"🔥🔥🔥 [QC 路由] 检测到错误 (exit_code!=0), 正在进行第 {retry_count + 1} 次重试...")
+            return "Analyst" # -> 重试
+        else:
+            print("--- [QC 路由] 重试次数耗尽, 放弃治疗 ---")
+            return "Writer" # -> 尽力了
+            
+    return "Writer" # -> 成功
+
 # --- 步骤 5: 构建 M2 的 "智能图" ---
 workflow = StateGraph(AgentState)
 
@@ -315,10 +376,10 @@ workflow.add_conditional_edges(
 # 为了更智能，我们还是用 supervisor_router
 workflow.add_conditional_edges(
     "Analyst",
-    supervisor_router,
+    qc_router,
     {
-        "Writer": "Writer", # 通常分析完就写
-        "END": END
+        "Analyst": "Analyst", # 重试
+        "Writer": "Writer"    #通过
     }
 )
 
