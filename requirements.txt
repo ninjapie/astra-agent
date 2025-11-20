@@ -13,3 +13,5 @@ llama-index-embeddings-openai
 sqlalchemy
 psycopg2-binary
 fastapi-cors
+docker
+aiofiles
