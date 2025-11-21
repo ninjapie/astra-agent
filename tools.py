@@ -28,8 +28,29 @@ warnings.simplefilter(action='ignore', category=UserWarning)
 # [Astra 全局绘图风格配置]
 try:
     # 1. 设置 Seaborn 样式 (这会重置字体，所以必须先运行)
-    sns.set_theme(context="paper", style="whitegrid", font_scale=1.2)
-    
+    sns.set_theme(context="paper", style="whitegrid", palette="muted", font_scale=1.2)
+    # custom_colors = ["#2a9d8f", "#e9c46a", "#f4a261", "#e76f51", "#264653"]
+    custom_colors = [
+        # 1-5: 核心主色 (蓝、橙、绿、红、紫)
+        "#2a9d8f", "#F28E2B", "#59A14F", "#E15759", "#B07AA1",
+        # 6-10: 辅助深色 (青、黄、棕、粉、灰)
+        "#76B7B2", "#EDC948", "#9C755F", "#FF9DA7", "#BAB0AC",
+        # 11-15: 扩展亮色
+        "#A0CBE8", "#FFBE7D", "#8CD17D", "#FF9D9A", "#D4A6C8",
+        # 16-20: 扩展暗色
+        "#499894", "#E19D29", "#79706E", "#FABFD2", "#86BCB6"
+    ]
+    # custom_colors = [
+    #     "#264653", "#2a9d8f", "#e9c46a", "#f4a261", "#e76f51", # 原有经典5色
+    #     "#6d597a", "#b56576", "#e56b6f", "#eaac8b",             # 增加玫瑰/紫调
+    #     "#8ab17d", "#b5e48c", "#344e41"                         # 增加森林绿调
+    # ]
+    # custom_colors = [
+    #     "#3B82F6", "#10B981", "#8B5CF6", "#F59E0B", "#EF4444", # 亮眼主色
+    #     "#6366F1", "#EC4899", "#14B8A6", "#F97316", "#06B6D4", # 霓虹科技感
+    #     "#64748B", "#84CC16", "#A855F7", "#D946EF", "#0EA5E9"  # 补充色
+    # ]
+    sns.set_palette(custom_colors)
     # 2. [关键修复] 定义字体回退列表 (Font Fallback)
     # 只要列表里有一个能用的中文字体，Matplotlib 就能正常显示中文
     # 我们在 Docker 里装了 'Noto Sans CJK JP' (思源黑体)

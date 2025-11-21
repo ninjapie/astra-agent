@@ -134,10 +134,33 @@ async def analyst_node(state: AgentState) -> dict:
     prompt = f"""
       你是一个精通 Python 的数据分析师。任务: {task}
       背景: {rag_context}
-      要求:
+      
+      【代码执行要求】:
       1. 务必使用 print() 输出最终结果。
       2. 仅在需要时绘图 (/app/output.png)。
       3. **不要**在代码中设置绘图风格 (如 `sns.set_theme`)，环境已预置了支持中文的学术风格配置。直接画图即可。
+      4. 优先使用 **Seaborn** (`sns`) 绘图，其次是 Matplotlib (`plt`)。
+      
+      【通用美学与配色规范】(必须严格遵守):
+      1. **严禁硬编码颜色**: 禁止出现 `color=['red', 'blue']` 或 `c='k'` 这种代码。环境已预置了优雅的 `custom_colors`，请利用它。
+      
+      2. **分类图表 (柱状图 bar / 散点图 scatter / 箱线图 box / 小提琴图 violin)**:
+         - **规则**: 必须通过 `hue` 参数激活自动配色。
+         - **写法**: `sns.barplot(x=vars, y=vals, hue=vars, legend=False)`
+         - **原理**: 如果不加 `hue`，Seaborn 默认只用一种颜色；加上 `hue` 才会按类别循环使用全局色盘。
+         
+      3. **饼图 (Pie Chart)**:
+         - **规则**: Matplotlib 的饼图不会自动通过 hue 取色，必须手动调用全局色盘。
+         - **写法**: `plt.pie(values, labels=labels, colors=sns.color_palette(), autopct='%1.1f%%')`
+         - **注意**: 必须传 `colors=sns.color_palette()`，否则它会变回丑陋的默认蓝/橙色。
+         
+      4. **折线图 (Line Chart)**:
+         - **规则**: 多条线请用 `hue` 分组；单条线保持默认颜色即可（会自动使用色盘的第一个主色，非常协调）。
+         
+      5. **热力图 (Heatmap)**:
+         - **规则**: 禁止使用默认配色。
+         - **推荐**: `cmap='YlGnBu'` (清新蓝绿，适合一般数据) 或 `cmap='RdBu_r'` (红蓝发散，适合有正负对比的数据)。
+         - **写法**: `sns.heatmap(data, cmap='YlGnBu', annot=True)`
     """
     if retry_count > 0 and previous_results:
         prompt += f"\n【修复错误】上次失败: {previous_results[-1]}\n请修正代码。"
