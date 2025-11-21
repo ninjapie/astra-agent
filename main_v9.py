@@ -45,6 +45,8 @@ class AgentState(TypedDict):
     analysis_results: Annotated[List[str], operator.add] # 历史累积
     retry_count: int
     image_data: str
+    # [新增] 是否需要人工审批
+    needs_review: bool
 
 # --- 3. 辅助函数: 动态计算下一步 ---
 def get_next_step_name(plan: List[str], current_step_name: str) -> str:
@@ -76,8 +78,16 @@ async def planner_node(state: AgentState) -> dict:
     【关键规则】:
     - 如果任务只是要求直接的答案、计算结果或生成特定文件(如"生成5个名字", "画张图")，**不要**包含 "Write"。
     - 只有当用户明确需要"报告"、"总结"或任务很复杂需要解释时，才包含 "Write"。
+
+    同时，请判断该任务是否需要【用户审批】(needs_review):
+    - 如果任务有风险（如删除文件）、非常复杂、或者指令模糊不确定，请设为 true。
+    - 如果任务很简单、明确（如"画个正弦函数图"、"搜索今天的汇率"），请设为 false (自动执行)。
     
-    请只返回 JSON 列表, 例如: ["Research", "Analyze"] 或 ["Analyze", "Write"]
+    【重要】请严格返回以下 JSON 格式（不要 Markdown，纯 JSON）:
+    {{
+        "plan": ["Research", "Analyze"],
+        "needs_review": false
+    }}
     """
     messages = [HumanMessage(content=prompt)]
     
@@ -86,15 +96,21 @@ async def planner_node(state: AgentState) -> dict:
         full_plan_str += chunk.content or ""
     
     try:
-        if "```json" in full_plan_str:
-             full_plan_str = full_plan_str.split("```json")[1].split("```")[0]
-        plan_steps = json.loads(full_plan_str.strip())
+        # 清理 Markdown 标记
+        clean_str = full_plan_str.replace("```json", "").replace("```", "").strip()
+        result_data = json.loads(clean_str)
+        
+        plan_steps = result_data.get("plan", ["Research", "Write"])
+        needs_review = result_data.get("needs_review", False)
+        
     except Exception as e:
-        plan_steps = ["Research", "Write"] 
+        print(f"计划解析失败，降级处理: {e}")
+        plan_steps = ["Research", "Write"]
+        needs_review = True # 解析失败时，为了安全，默认开启审批
     
     # 初始步骤
     first_step = plan_steps[0] if plan_steps else "END"
-    return {"plan": plan_steps, "current_step": first_step}
+    return {"plan": plan_steps, "current_step": first_step, "needs_review": needs_review}
 
 # 2. 研究员 (Researcher)
 def researcher_node(state: AgentState) -> dict:
@@ -134,6 +150,11 @@ async def analyst_node(state: AgentState) -> dict:
     prompt = f"""
       你是一个精通 Python 的数据分析师。任务: {task}
       背景: {rag_context}
+
+      【代码执行与防幻觉协议】(CRITICAL):
+      1. **Fact Check**: 如果你没有编写代码调用 `python_interpreter`，**绝对禁止**在回复中声称“文件已保存”或提及 `/app/output.png`。
+      2. 只有当你生成的 Python 代码中确实包含 `plt.savefig('/app/output.png')` 时，才允许在代码注释或最终总结中提及该文件。
+      3. 如果任务不需要代码（例如纯逻辑分析），请直接给出文字结论，不要假装运行了代码。
       
       【代码执行要求】:
       1. 务必使用 print() 输出最终结果。
@@ -185,6 +206,11 @@ async def analyst_node(state: AgentState) -> dict:
     
     response = await analyst_llm.ainvoke(messages)
     analysis_output = response.content
+
+    # 检查是否发生了“没调工具却声称有文件”的情况
+    if not response.tool_calls and "/app/output.png" in str(analysis_output):
+        print("--- [系统纠错] 检测到 Analyst 幻觉 (未执行代码却声称有图)，正在修正... ---")
+        analysis_output = "[系统提示]: 分析师未执行任何代码，因此没有生成图表。请忽略关于 /app/output.png 的描述，仅参考文字分析。"
     
     if response.tool_calls:
         for tool_call in response.tool_calls:
@@ -227,6 +253,12 @@ async def writer_node(state: AgentState) -> dict:
 
     return {"final_report": full_report, "current_step": "END"}
 
+# 5. [新增] 人工审批节点 (HumanReview)
+def human_review_node(state: AgentState) -> dict:
+    print("--- [人工审批] 等待用户确认... ---")
+    # 这里什么都不用做，只是为了让图停在这里
+    return {}
+
 # --- 5. 路由逻辑 (通用化) ---
 
 def universal_router(state: AgentState) -> str:
@@ -238,6 +270,16 @@ def universal_router(state: AgentState) -> str:
     if step == "Write": return "Writer"
     if step == "END": return END
     return END # 默认
+
+def planner_router(state: AgentState) -> str:
+    """规划师路由: 决定是去审批，还是直接开始干活"""
+    needs_review = state.get("needs_review", False)
+    
+    if needs_review:
+        return "HumanReview" # 去审批节点（会被中断）
+    else:
+        # 不需要审批，直接去第一步 (复用通用路由逻辑)
+        return universal_router(state)
 
 def qc_router(state: AgentState) -> str:
     """M10: 质量控制路由 (Analyst 专用)"""
@@ -267,6 +309,7 @@ def qc_router(state: AgentState) -> str:
 workflow = StateGraph(AgentState)
 
 workflow.add_node("Planner", planner_node)
+workflow.add_node("HumanReview", human_review_node)
 workflow.add_node("Researcher", researcher_node)
 workflow.add_node("Analyst", analyst_node)
 workflow.add_node("Writer", writer_node)
@@ -274,7 +317,21 @@ workflow.add_node("Writer", writer_node)
 workflow.set_entry_point("Planner")
 
 # Planner -> Router
-workflow.add_conditional_edges("Planner", universal_router)
+workflow.add_conditional_edges(
+    "Planner",
+    planner_router, # 使用新路由
+    {
+        "HumanReview": "HumanReview", 
+        "Researcher": "Researcher",
+        "Analyst": "Analyst", 
+        "Writer": "Writer", 
+        "END": END
+    }
+)
+
+# [新增] HumanReview -> Universal Router
+# 如果用户批准了（继续运行），就从这里进入第一步
+workflow.add_conditional_edges("HumanReview", universal_router)
 
 # Researcher -> Router
 workflow.add_conditional_edges("Researcher", universal_router)
@@ -286,4 +343,4 @@ workflow.add_conditional_edges("Analyst", qc_router)
 workflow.add_conditional_edges("Writer", lambda x: END)
 
 memory = MemorySaver()
-app = workflow.compile(checkpointer=memory, interrupt_after=["Planner"])
+app = workflow.compile(checkpointer=memory, interrupt_before=["HumanReview"])
