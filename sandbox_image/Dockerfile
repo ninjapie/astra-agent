@@ -5,20 +5,22 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# 1. 准备安装字体 (需要开启 contrib 和 non-free 源)
-#    Debian 默认只开启 main，没有微软字体
+# 1. 准备安装字体 (开启 contrib non-free)
 RUN echo "deb http://deb.debian.org/debian bookworm contrib non-free" > /etc/apt/sources.list.d/contrib.list
 
-# 2. 安装系统依赖 + 微软字体
-#    ttf-mscorefonts-installer 安装时会弹出许可协议，我们需要用 debconf 自动同意
+# 2. 安装系统依赖 + 微软字体 + [新增] 中文字体
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     libfreetype6-dev \
     libpng-dev \
     fontconfig \
-    debconf && \
+    debconf \
+    # [新增] 安装思源黑体 (支持中文/日文/韩文)
+    fonts-noto-cjk \
+    && \
     echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | debconf-set-selections && \
     apt-get install -y --no-install-recommends ttf-mscorefonts-installer && \
+    # 刷新字体缓存
     fc-cache -f -v && \
     rm -rf /var/lib/apt/lists/*
 
@@ -33,8 +35,5 @@ RUN pip install --no-cache-dir \
     networkx \
     scipy
 
-# 创建工作目录
 WORKDIR /app
-
-# 默认命令
 CMD ["sleep", "infinity"]

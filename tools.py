@@ -18,20 +18,42 @@ except Exception as e:
 GLOBAL_STYLE_CONFIG = """
 import matplotlib.pyplot as plt
 import seaborn as sns
+import matplotlib.font_manager as fm
+import warnings
+
+# [Astra 修复] 忽略 Seaborn 的版本兼容性警告
+warnings.simplefilter(action='ignore', category=FutureWarning)
+warnings.simplefilter(action='ignore', category=UserWarning)
 
 # [Astra 全局绘图风格配置]
 try:
-    # 使用 Seaborn 的学术风格 (Paper Context)
+    # 1. 设置 Seaborn 样式 (这会重置字体，所以必须先运行)
     sns.set_theme(context="paper", style="whitegrid", font_scale=1.2)
     
-    # 强制设置 Matplotlib 参数 (覆盖 Seaborn 的部分默认值)
-    plt.rcParams['figure.dpi'] = 300             # 高清分辨率
-    plt.rcParams['savefig.bbox'] = 'tight'       # 紧凑布局(防止切边)
-    plt.rcParams['font.family'] = 'serif'        # 衬线字体 (更学术)
-    plt.rcParams['font.serif'] = ['Times New Roman', 'DejaVu Serif', 'Liberation Serif']
+    # 2. [关键修复] 定义字体回退列表 (Font Fallback)
+    # 只要列表里有一个能用的中文字体，Matplotlib 就能正常显示中文
+    # 我们在 Docker 里装了 'Noto Sans CJK SC' (思源黑体)
+    base_fonts = ['Noto Sans CJK SC', 'SimHei', 'Arial Unicode MS', 'WenQuanYi Micro Hei', 'sans-serif']
     
-    # 这是一个小技巧：防止中文乱码 (如果镜像里有中文字体)
-    # plt.rcParams['axes.unicode_minus'] = False
+    # 3. 暴力覆盖: 无论是用 serif 还是 sans-serif，都强制包含中文字体
+    # 更新无衬线字体栈 (Seaborn 默认用这个)
+    plt.rcParams['font.sans-serif'] = base_fonts + plt.rcParams['font.sans-serif']
+    
+    # 更新衬线字体栈 (以防用户手动指定 serif)
+    plt.rcParams['font.serif'] = ['Times New Roman'] + base_fonts + plt.rcParams['font.serif']
+    
+    # 4. 设置默认字体族
+    # 解释: 虽然学术界喜欢 Serif (Times New Roman)，但图表通常用 Sans-Serif 更清晰
+    # 且 'Noto Sans CJK SC' 是无衬线体，匹配 sans-serif 效果最好
+    plt.rcParams['font.family'] = 'sans-serif'
+    
+    # 5. 解决负号 '-' 显示为方块的问题
+    plt.rcParams['axes.unicode_minus'] = False
+    
+    # 6. 高清设置
+    plt.rcParams['figure.dpi'] = 300
+    plt.rcParams['savefig.bbox'] = 'tight'
+
 except Exception as e:
     print(f"[系统警告] 风格配置加载失败: {e}")
 """
