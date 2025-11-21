@@ -32,8 +32,8 @@ try:
     
     # 2. [关键修复] 定义字体回退列表 (Font Fallback)
     # 只要列表里有一个能用的中文字体，Matplotlib 就能正常显示中文
-    # 我们在 Docker 里装了 'Noto Sans CJK SC' (思源黑体)
-    base_fonts = ['Noto Sans CJK SC', 'SimHei', 'Arial Unicode MS', 'WenQuanYi Micro Hei', 'sans-serif']
+    # 我们在 Docker 里装了 'Noto Sans CJK JP' (思源黑体)
+    base_fonts = ['Noto Sans CJK JP', 'SimHei', 'Arial Unicode MS', 'WenQuanYi Micro Hei', 'sans-serif']
     
     # 3. 暴力覆盖: 无论是用 serif 还是 sans-serif，都强制包含中文字体
     # 更新无衬线字体栈 (Seaborn 默认用这个)
@@ -72,7 +72,7 @@ def python_interpreter(code: str) -> str:
     if not client:
         return json.dumps({"error": "Docker 服务未启动"})
 
-    print(f"--- [沙箱] 准备执行代码... ---\n{code[:50]}...")
+    # print(f"--- [沙箱] 准备执行代码... ---\n{code}...")
 
     container = None
     try:
@@ -88,6 +88,7 @@ def python_interpreter(code: str) -> str:
         # 2. 准备代码
         # 将我们的配置代码 + 用户的代码拼接在一起
         full_code = GLOBAL_STYLE_CONFIG + "\n\n" + code
+        print(f"--- [沙箱] 准备执行代码... ---\n{full_code[:50]}")
         script_content = full_code.encode('utf-8')
         tar_stream = io.BytesIO()
         with tarfile.open(fileobj=tar_stream, mode='w') as tar:

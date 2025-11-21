@@ -132,12 +132,12 @@ async def analyst_node(state: AgentState) -> dict:
     rag_context = await query_engine.aquery(task)
     
     prompt = f"""
-    你是一个精通 Python 的数据分析师。任务: {task}
-    背景: {rag_context}
-    要求:
-    1. 务必使用 print() 输出最终结果。
-    2. 仅在需要时绘图 (/app/output.png)。
-    3. 优先使用 seaborn 设置学术风格。
+      你是一个精通 Python 的数据分析师。任务: {task}
+      背景: {rag_context}
+      要求:
+      1. 务必使用 print() 输出最终结果。
+      2. 仅在需要时绘图 (/app/output.png)。
+      3. **不要**在代码中设置绘图风格 (如 `sns.set_theme`)，环境已预置了支持中文的学术风格配置。直接画图即可。
     """
     if retry_count > 0 and previous_results:
         prompt += f"\n【修复错误】上次失败: {previous_results[-1]}\n请修正代码。"
