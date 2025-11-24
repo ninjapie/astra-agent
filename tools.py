@@ -188,10 +188,9 @@ def python_interpreter(code: str) -> str:
         finally:
             if container:
                 try:
-                    container.stop()
-                    container.remove()
-                except:
-                    pass
+                    container.remove(force=True) # 强制删除，这会同时停止容器
+                except Exception as cleanup_error:
+                    print(f"⚠️ [沙箱] 容器清理失败: {cleanup_error}")
       # 如果重试都失败了
     return json.dumps({"error": f"Docker 执行连续失败 (Max Retries Exceeded): {last_error}"})
 

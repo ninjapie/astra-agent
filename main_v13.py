@@ -84,7 +84,7 @@ async def planner_node(state: AgentState) -> dict:
     你是一个专业的项目规划师。任务: {task}
     请制定步骤计划，从以下选择:
     1. "Research": 需要外部信息。
-    2. "Analyze": 需要计算、代码执行或生成文件。
+    2. "Analyze": 需要计算、代码执行、浏览网页或生成文件。
     3. "Write": 需要写一份详细的文字总结报告。
     
     【关键规则】:
@@ -154,10 +154,29 @@ async def analyst_node(state: AgentState) -> dict:
     
     query_engine = index.as_query_engine(similarity_top_k=3)
     rag_context = await query_engine.aquery(task)
+
+    # [M15 核心] 构建完整的历史记忆上下文 (Memory Stream)
+    history_context = ""
+    if previous_results:
+        history_context = "\n\n=== 📜 历史操作记录 (Memory Stream) ===\n"
+        for i, res in enumerate(previous_results):
+            # 截断过长的输出 (如网页全文)，但保留足够长度供分析
+            preview = res[:3000] + "...(内容过长已截断)" if len(res) > 3000 else res
+            history_context += f"--- Step {i+1} Output ---\n{preview}\n\n"
+        history_context += "========================================\n"
     
     prompt = f"""
       你是一个全能数据分析师。任务: {task}
       背景: {rag_context}
+
+      {history_context}
+
+      【当前状态与决策】:
+      请回顾上面的 [历史操作记录] 来决定下一步：
+      1. **信息不足？** -> 调用 `scrape_website(url)` 获取详情。
+      2. **缺库？** -> 调用 `install('package')`。
+      3. **有数据了？** -> 编写 Python 代码处理数据或画图。
+      4. **报错了？** -> 根据错误信息修正代码。
 
       【深度浏览】:
       1. 如果背景信息(rag_context)太简略，或者包含 URL 链接，你可以使用 `scrape_website(url)` 工具来读取网页全文。
@@ -191,11 +210,6 @@ async def analyst_node(state: AgentState) -> dict:
       3. **饼图**: 必须手动调用色盘 `plt.pie(..., colors=sns.color_palette())`。
       4. **热力图**: 推荐 `cmap='YlGnBu'`。
     """
-    
-    if previous_results:
-        last_output = previous_results[-1]
-        # 无论是什么工具的输出，都告诉 LLM 这是"新获得的数据"
-        prompt += f"\n\n📂【最新工具输出数据】:\n{last_output}\n请基于此数据决定下一步行动(是继续处理，还是结束)。"
     
     # 视觉修正 Prompt
     if visual_critique and visual_critique != "PASS":
@@ -392,40 +406,13 @@ def analyst_router(state: AgentState) -> str:
 
     # 3. [中间状态]：动手了(比如抓取/安装)，但没出图 -> 必定是中间步骤
     # 强制闭环，让 Analyst 消化刚才获得的信息
-    if retry_count < 5: # 稍微放宽一点步数限制，防止复杂任务中断
+    if retry_count < 15: # 稍微放宽一点步数限制，防止复杂任务中断
         print("--- [路由] 工具执行完毕(无图)，返回 Analyst 继续处理信息... ---")
         return "Analyst"
     
     # 4. 步数耗尽
     print("--- [路由] 步骤耗尽，强制结束 ---")
     return "END"
-
-# [修复 4] QC 路由：成功后必须去 VisualCritic
-def qc_router(state: AgentState) -> str:
-    results = state.get("analysis_results", [])
-    last_result = results[-1] if results else ""
-    
-    is_error = False
-    try:
-        data = json.loads(last_result)
-        if data.get("exit_code", 0) != 0 or data.get("error"): is_error = True
-    except:
-        if "执行错误" in str(last_result): is_error = True
-
-    if is_error:
-        retry_count = state.get("retry_count", 0)
-        if retry_count < 3:
-            print(f"🔥🔥🔥 [QC] 错误, 重试第 {retry_count + 1} 次...")
-            return "Analyst" # 重试
-        else:
-            print("--- [QC] 重试耗尽 ---")
-            plan = state.get('plan', [])
-            next_step = get_next_step_name(plan, "Analyze")
-            if next_step == "Write": return "Writer"
-            return "END"
-    
-    # [关键] 如果没报错，去视觉检查
-    return "VisualCritic"
 
 # [修复 5] 视觉路由：通过后去 Writer
 def critic_router(state: AgentState) -> str:
