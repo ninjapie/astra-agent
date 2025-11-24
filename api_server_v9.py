@@ -7,9 +7,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
-from main_v13 import app as astra_app # 导入 M2 中编译好的 LangGraph app
+from main_v14 import app as astra_app # 导入 M2 中编译好的 LangGraph app
 from dotenv import load_dotenv
-from main_v13 import engine, vector_store
+from main_v14 import engine, vector_store
 from fastapi.staticfiles import StaticFiles
 import os
 from typing import Optional

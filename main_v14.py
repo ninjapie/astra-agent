@@ -57,6 +57,7 @@ class AgentState(TypedDict):
     # [优雅重构] 删除 last_tool_used，增加通用行为标记
     did_call_tool: bool  # 这轮是否动手了？
     has_generated_image: bool # 这轮是否出图了？
+    has_generated_html: bool # [M16 新增] 标记是否生成了 HTML
 
 # --- 3. 辅助函数 ---
 def get_next_step_name(plan: List[str], current_step_name: str) -> str:
@@ -85,11 +86,10 @@ async def planner_node(state: AgentState) -> dict:
     请制定步骤计划，从以下选择:
     1. "Research": 需要外部信息。
     2. "Analyze": 需要计算、代码执行、浏览网页或生成文件。
-    3. "Write": 需要写一份详细的文字总结报告。
+    3. "Write": 需要写一份详细的文字总结报告或分析内容。
     
     【关键规则】:
     - 如果任务只是要求直接的答案、计算结果或生成特定文件(如"生成5个名字", "画张图")，**不要**包含 "Write"。
-    - 只有当用户明确需要"报告"、"总结"、"分析"或任务很复杂需要解释时，才包含 "Write"。
 
     同时，请判断该任务是否需要【用户审批】(needs_review):
     - 如果任务有风险（如删除文件）、非常复杂、或者指令模糊不确定，请设为 true。
@@ -124,14 +124,16 @@ async def planner_node(state: AgentState) -> dict:
 def researcher_node(state: AgentState) -> dict:
     print("--- [研究员] 开始搜索 ---")
     task = state.get("task")
+    print(f'task: {task}')
     try:
         research_results = web_search_tool.invoke(task)
     except Exception as e:
         research_results = [f"搜索失败: {e}"]
     
+    print(f"search results: {research_results}")
     MAX_CHARS = 4000
     documents = []
-    for result in research_results:
+    for result in research_results['results']:
         content = str(result)
         if len(content) > MAX_CHARS: content = content[:MAX_CHARS] + "..."
         documents.append(Document(text=content, metadata={"task": task}))
@@ -141,6 +143,7 @@ def researcher_node(state: AgentState) -> dict:
     
     plan = state.get("plan", [])
     next_step = get_next_step_name(plan, "Research")
+    print(f"next step: {next_step}")
     return {"current_step": next_step}
 
 # 3. 分析师 (Analyst)
@@ -177,6 +180,12 @@ async def analyst_node(state: AgentState) -> dict:
       2. **缺库？** -> 调用 `install('package')`。
       3. **有数据了？** -> 编写 Python 代码处理数据或画图。
       4. **报错了？** -> 根据错误信息修正代码。
+
+      【交互式图表 (Interactive)】:
+      1. 如果用户要求“交互式”、“动态”或“可缩放”的图表，**必须**生成 HTML 文件。
+      2. **推荐库**: `pyecharts` (首选) 或 `plotly`。
+      3. **安装**: 别忘了先 `install('pyecharts')`。
+      4. **保存**: 必须渲染并保存为 `/app/output.html` (例如 `bar.render("/app/output.html")`)。
 
       【深度浏览】:
       1. 如果背景信息(rag_context)太简略，或者包含 URL 链接，你可以使用 `scrape_website(url)` 工具来读取网页全文。
@@ -239,6 +248,7 @@ async def analyst_node(state: AgentState) -> dict:
 
     did_call_tool = False
     has_generated_image = False
+    has_generated_html = False
     latest_image_path = None
 
     if response.tool_calls:
@@ -257,11 +267,13 @@ async def analyst_node(state: AgentState) -> dict:
                     output_data = json.loads(tool_result)
                     files = output_data.get("files", [])
                     for f in files:
-                        if f.get("type") == "image" and f.get("saved_path"):
+                        if f.get("type") == "html":
+                            has_generated_html = True
+                            print(f"--- [分析师] 生成了交互式 HTML ---")
+                        elif f.get("type") == "image" and f.get("saved_path"):
                             latest_image_path = f["saved_path"]
                             has_generated_image = True
                             print(f"--- [分析师] 捕获到生成图片: {latest_image_path} ---")
-                            break 
                 except:
                     pass
             elif tool_name == "scrape_website":
@@ -283,11 +295,18 @@ async def analyst_node(state: AgentState) -> dict:
         "retry_count": current_retry + 1,
         "latest_image_path": latest_image_path,
         "did_call_tool": did_call_tool,          # [新]
-        "has_generated_image": has_generated_image # [新]
+        "has_generated_image": has_generated_image, # [新]
+        "has_generated_html": has_generated_html
     }
 
 # 4. 视觉评论家 (Visual Critic)
 async def visual_critic_node(state: AgentState) -> dict:
+    # [M16] 如果是 HTML，目前 Visual Critic 无法检查 (因为是代码)，直接通过
+    # 未来可以加入代码检查，但现在先放行
+    if state.get("has_generated_html"):
+        print("--- [视觉评论家] 检测到 HTML 交互图表，自动通过 (HTML Bypass) ---")
+        return {"visual_critique": "PASS"}
+
     image_path = state.get("latest_image_path")
     
     # 无图则直接通过
@@ -352,7 +371,7 @@ async def writer_node(state: AgentState) -> dict:
     专业写手。任务: {task}
     上下文: {rag_context}
     数据分析: {analysis_results}
-    请撰写报告。
+    请撰写报告。如果生成了 HTML 图表，请在报告中提示用户下载或查看附件。
     """
     messages = [HumanMessage(content=prompt)]
     
@@ -390,6 +409,7 @@ def analyst_router(state: AgentState) -> str:
     """
     did_call_tool = state.get("did_call_tool", False)
     has_image = state.get("has_generated_image", False)
+    has_html = state.get("has_generated_html", False)
     retry_count = state.get("retry_count", 0)
     
     # 1. [思考结束]：没动手，只是在说话 -> 任务完成
@@ -405,18 +425,23 @@ def analyst_router(state: AgentState) -> str:
         return "END"
 
     # 2. [作品产出]：动手了，且生成了图片 -> 去质检
-    if has_image:
-        print("--- [路由] 检测到图片生成，送往视觉检查 ---")
+    if has_image or has_html:
+        print("--- [路由] 检测到视觉产出 (Img/HTML) -> VisualCritic ---")
         return "VisualCritic"
 
     # 3. [中间状态]：动手了(比如抓取/安装)，但没出图 -> 必定是中间步骤
     # 强制闭环，让 Analyst 消化刚才获得的信息
-    if retry_count < 15: # 稍微放宽一点步数限制，防止复杂任务中断
-        print("--- [路由] 工具执行完毕(无图)，返回 Analyst 继续处理信息... ---")
-        return "Analyst"
+    if did_call_tool:
+        if retry_count < 15: 
+            print("--- [路由] 工具执行完毕(无图) -> Analyst 继续思考 ---")
+            return "Analyst"
+        else:
+            return "Writer"
     
-    # 4. 步数耗尽
-    print("--- [路由] 步骤耗尽，强制结束 ---")
+    print("--- [路由] 分析师停止操作 -> Writer ---")
+    plan = state.get("plan", [])
+    next_step = get_next_step_name(plan, "Analyze")
+    if next_step == "Write": return "Writer"
     return "END"
 
 # [修复 5] 视觉路由：通过后去 Writer
@@ -440,11 +465,7 @@ def critic_router(state: AgentState) -> str:
         return "Analyst"
     
     # 3. 实在改不动了，去 Writer
-    print("⚠️ [视觉路由] 重试耗尽，强制通过。")
-    plan = state.get("plan", [])
-    next_step = get_next_step_name(plan, "Analyze")
-    if next_step == "Write": return "Writer"
-    return "END"
+    return "Writer"
 
 # --- 6. 构建图 ---
 workflow = StateGraph(AgentState)
@@ -465,8 +486,16 @@ workflow.add_conditional_edges(
     {"HumanReview": "HumanReview", "Researcher": "Researcher", "Analyst": "Analyst", "Writer": "Writer", "END": END}
 )
 
-workflow.add_conditional_edges("HumanReview", universal_router)
-workflow.add_conditional_edges("Researcher", universal_router)
+workflow.add_conditional_edges(
+    "HumanReview",
+    universal_router,
+    {"Researcher": "Researcher", "Analyst": "Analyst", "Writer": "Writer", "END": END}
+)
+workflow.add_conditional_edges(
+    "Researcher",
+    universal_router,
+    {"Researcher": "Researcher", "Analyst": "Analyst", "Writer": "Writer", "END": END}
+)
 
 # [修复 6] Analyst 只有一条条件出边
 workflow.add_conditional_edges(

@@ -115,7 +115,7 @@ def python_interpreter(code: str) -> str:
             saved_files = []
             
             # 定义我们要从沙箱里"打捞"的文件扩展名
-            target_extensions = ['.png', '.jpg', '.jpeg', '.xlsx', '.csv', '.pdf', '.txt']
+            target_extensions = ['.png', '.jpg', '.jpeg', '.xlsx', '.csv', '.pdf', '.txt', '.html']
             
             try:
                 # 列出 /app 目录下的所有文件
@@ -155,6 +155,10 @@ def python_interpreter(code: str) -> str:
                                     if filename.endswith(('.png', '.jpg', '.jpeg', '.gif')):
                                         file_url = f"http://127.0.0.1:8000/static/{unique_filename}"
                                         file_type = "image"
+                                    elif filename.endswith('.html'):
+                                        # HTML 既是文件，也是一种特殊的"viewable"
+                                        file_url = f"http://127.0.0.1:8000/static/{unique_filename}"
+                                        file_type = "html" # 标记为 html，前端可以用 iframe 渲染
                                     # 2. 如果是其他文件 (Excel/PDF)，改用 /download/ (为了正确下载文件名)
                                     else:
                                         file_url = f"http://127.0.0.1:8000/download/{unique_filename}"
