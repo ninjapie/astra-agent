@@ -15,3 +15,5 @@ psycopg2-binary
 fastapi-cors
 docker
 aiofiles
+beautifulsoup4
+requests
