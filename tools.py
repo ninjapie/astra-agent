@@ -9,6 +9,7 @@ import uuid
 import time
 import requests
 from bs4 import BeautifulSoup
+from memory import save_profile
 
 try:
     client = docker.from_env()
@@ -233,3 +234,17 @@ def scrape_website(url: str) -> str:
 
     except Exception as e:
         return f"网页抓取失败: {str(e)}"
+
+@tool
+def update_user_memory(key: str, value: str) -> str:
+    """
+    当用户明确提到个人偏好、身份信息或要求你"记住"某事时使用此工具。
+    key: 记忆的类别 (例如: "visual_preference", "language", "user_name", "job_role")
+    value: 具体内容 (例如: "喜欢深色背景图表", "总是用中文", "Maple", "资深Python开发者")
+    """
+    try:
+        # 这里我们暂时硬编码 user_id 为 "default_user"，未来可以从 context 获取
+        save_profile(key, value, "default_user")
+        return f"已成功记住: 用户的 {key} 是 {value}。"
+    except Exception as e:
+        return f"记忆存储失败: {str(e)}"

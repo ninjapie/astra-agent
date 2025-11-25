@@ -13,7 +13,8 @@ from llama_index.vector_stores.postgres import PGVectorStore
 from llama_index.embeddings.openai import OpenAIEmbedding
 import sqlalchemy
 import json
-from tools import python_interpreter, scrape_website
+from tools import python_interpreter, scrape_website, update_user_memory
+from memory import get_profile_str
 import re
 
 # --- 1. 配置与初始化 ---
@@ -59,6 +60,7 @@ class AgentState(TypedDict):
     did_call_tool: bool  # 这轮是否动手了？
     has_generated_image: bool # 这轮是否出图了？
     has_generated_html: bool # [M16 新增] 标记是否生成了 HTML
+    last_tool_name: Annotated[str, replace_str]
 
 # --- 3. 辅助函数 ---
 def get_next_step_name(plan: List[str], current_step_name: str) -> str:
@@ -81,9 +83,15 @@ def encode_image(image_path):
 async def planner_node(state: AgentState) -> dict:
     print("--- [规划师] 开始工作 ---")
     task = state.get("task")
+
+    user_profile = get_profile_str()
     
     prompt = f"""
-    你是一个专业的项目规划师。任务: {task}
+    你是一个专业的项目规划师。
+
+    {user_profile}
+
+    任务: {task}
     请制定步骤计划，从以下选择:
     1. "Research": 需要外部信息。
     2. "Analyze": 需要计算、代码执行、浏览网页或生成文件。
@@ -126,6 +134,7 @@ def researcher_node(state: AgentState) -> dict:
     print("--- [研究员] 开始搜索 ---")
     task = state.get("task")
     print(f'task: {task}')
+    user_profile = get_profile_str()
     try:
         research_results = web_search_tool.invoke(task)
     except Exception as e:
@@ -159,6 +168,8 @@ async def analyst_node(state: AgentState) -> dict:
     query_engine = index.as_query_engine(similarity_top_k=3)
     rag_context = await query_engine.aquery(task)
 
+    user_profile = get_profile_str()
+
     # [M15 核心] 构建完整的历史记忆上下文 (Memory Stream)
     history_context = ""
     visited_urls = set()
@@ -178,7 +189,10 @@ async def analyst_node(state: AgentState) -> dict:
         visited_warning = f"\n\n🚫【已访问过的 URL (禁止重复抓取)】:\n{', '.join(list(visited_urls))}\n请寻找新的 URL 或基于现有信息进行分析。"
     
     prompt = f"""
-      你是一个全能数据分析师。任务: {task}
+      你是一个全能数据分析师。
+      {user_profile}
+      
+      任务: {task}
       背景: {rag_context}
 
       {history_context}
@@ -189,6 +203,7 @@ async def analyst_node(state: AgentState) -> dict:
       2. **缺库？** -> 调用 `install('package')`。
       3. **有数据了？** -> 停止搜索，开始处理数据或输出结论。如果你觉得信息已经足够回答问题，**请不要调用任何工具**，直接结束，我会让 Writer 帮你生成报告。
       4. **报错了？** -> 根据错误信息修正代码。
+      5. **记忆更新** -> 如果用户提到偏好(如"我叫X", "喜欢Y")，请调用 `update_user_memory(key, value)`。这是最高优先级。
 
       {visited_warning}
 
@@ -230,10 +245,12 @@ async def analyst_node(state: AgentState) -> dict:
       4. 优先使用 **Seaborn** (`sns`) 绘图。
       
       【通用美学与配色规范】(必须严格遵守):
-      1. **严禁硬编码颜色**: 禁止出现 `color=['red', 'blue']`。
-      2. **分类图表**: 必须通过 `hue` 参数激活自动配色，例如 `sns.barplot(x=vars, y=vals, hue=vars, legend=False)`。
-      3. **饼图**: 必须手动调用色盘 `plt.pie(..., colors=sns.color_palette())`。
-      4. **热力图**: 推荐 `cmap='YlGnBu'`。
+      1. 默认情况：不要在代码中设置 `sns.set_theme`，使用环境预置的浅色风格。
+      2. **特权例外**：如果用户偏好中提到**"暗黑"、"深色"、"Dark Mode"**，或者任务明确的颜色或者样式要求，你**必须**在代码显式来覆盖默认设置。这是允许的。
+      3. **热力图**: 推荐 `cmap='YlGnBu'`。
+      4. **分类图表**: 必须通过 `hue` 参数激活自动配色，例如 `sns.barplot(x=vars, y=vals, hue=vars, legend=False)`。
+      5. **饼图**: 必须手动调用色盘 `plt.pie(..., colors=sns.color_palette())`。
+      6. **严禁硬编码颜色**: 禁止出现 `color=['red', 'blue']`。
     """
     
     # 视觉修正 Prompt
@@ -251,7 +268,7 @@ async def analyst_node(state: AgentState) -> dict:
     else:
         message_content = prompt
     
-    analyst_llm = llm.bind_tools([python_interpreter, scrape_website])
+    analyst_llm = llm.bind_tools([python_interpreter, scrape_website, update_user_memory])
     messages = [HumanMessage(content=message_content)]
     
     response = await analyst_llm.ainvoke(messages)
@@ -262,10 +279,13 @@ async def analyst_node(state: AgentState) -> dict:
     has_generated_html = False
     latest_image_path = None
 
+    last_tool_name = "none"
+
     if response.tool_calls:
         did_call_tool = True
         for tool_call in response.tool_calls:
             tool_name = tool_call["name"]
+            last_tool_name = tool_name # [记录工具名]
             tool_args = tool_call["args"]
 
             if tool_name == "python_interpreter":
@@ -293,6 +313,10 @@ async def analyst_node(state: AgentState) -> dict:
                 # 将抓取结果作为补充信息，可能需要再次思考?
                 # 简化起见，我们将结果存入 analysis_output，供下一轮或 Writer 使用
                 analysis_output = f"【网页抓取结果】:\n{tool_result[:2000]}..." # 预览
+            elif tool_name == "update_user_memory":
+                print(f"--- [分析师] 更新记忆: {tool_args} ---")
+                tool_result = update_user_memory.invoke(tool_args)
+                analysis_output = f"【系统通知】: {tool_result}"
     # 防幻觉检查
     if not did_call_tool and "/app/output.png" in str(analysis_output):
         print("--- [系统纠错] 检测到 Analyst 幻觉，正在修正... ---")
@@ -307,7 +331,8 @@ async def analyst_node(state: AgentState) -> dict:
         "latest_image_path": latest_image_path,
         "did_call_tool": did_call_tool,          # [新]
         "has_generated_image": has_generated_image, # [新]
-        "has_generated_html": has_generated_html
+        "has_generated_html": has_generated_html,
+        "last_tool_name": last_tool_name # [更新状态]
     }
 
 # 4. 视觉评论家 (Visual Critic)
@@ -352,6 +377,7 @@ async def visual_critic_node(state: AgentState) -> dict:
        - 注意：如果执行日志是 JSON 格式或代码日志，请忽略日志内容，**重点对比图片和[原始任务目标]**。
     2. **可读性**: 是否存在乱码、严重模糊、内容被截断？
     3. **完整性**: 图片是否完整？
+    4. **用户偏好检查**: 如果任务或用户偏好提到了颜色或着样式风格，请检查图片的配色和样式风格是否符合用户要求。
     
     如果不符合描述或有严重缺陷，请给出具体的修改建议。
     如果图片符合描述且质量合格，或者你不确定但图片看起来没有技术错误，请**仅回复 "PASS"**。
@@ -377,9 +403,14 @@ async def writer_node(state: AgentState) -> dict:
     query_engine = index.as_query_engine(similarity_top_k=3)
     rag_context = await query_engine.aquery(task)
     analysis_results = state.get("analysis_results", [])
+
+    user_profile = get_profile_str()
     
     prompt = f"""
-    专业写手。任务: {task}
+    专业写手。
+    {user_profile}
+    
+    任务: {task}
     上下文: {rag_context}
     数据分析: {analysis_results}
     请撰写报告。如果生成了 HTML 图表，请在报告中提示用户下载或查看附件。
@@ -421,7 +452,13 @@ def analyst_router(state: AgentState) -> str:
     did_call_tool = state.get("did_call_tool", False)
     has_image = state.get("has_generated_image", False)
     has_html = state.get("has_generated_html", False)
+    last_tool = state.get("last_tool_name") # [获取具体工具]
     retry_count = state.get("retry_count", 0)
+    
+    # 1. 如果是记忆更新工具，说明是配置操作，直接去 Writer 确认
+    if last_tool == "update_user_memory":
+        print("--- [路由] 记忆更新完成 -> Writer 确认 ---")
+        return "Writer"
     
     # 1. [作品产出]：出图了 -> 去质检
     if has_image or has_html:
